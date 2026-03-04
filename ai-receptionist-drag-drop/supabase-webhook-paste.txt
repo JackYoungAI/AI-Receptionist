@@ -1,0 +1,41 @@
+// Retell webhook — paste this into a NEW Supabase Edge Function.
+// In Supabase: Edge Functions → Create function → name: retell-webhook
+// Then set secret: RETELL_WEBHOOK_SECRET (optional, if you want to verify Retell)
+
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+serve(async (req) => {
+  if (req.method !== "POST") return new Response("OK", { status: 200 });
+  try {
+    const body = await req.json();
+    const agentId = body.agent_id;
+    const callerNumber = body.from_number ?? body.caller_number ?? null;
+    const durationSeconds = body.call_duration_s ?? body.duration_seconds ?? body.duration ?? null;
+    const transcript = typeof body.transcript === "string" ? body.transcript : JSON.stringify(body.transcript ?? "");
+    const summary = body.call_summary ?? body.summary ?? null;
+
+    if (!agentId) return new Response(JSON.stringify({ error: "Missing agent_id" }), { status: 400 });
+
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
+
+    const { data: client } = await supabase.from("clients").select("id").eq("retell_agent_id", agentId).single();
+    if (!client) return new Response(JSON.stringify({ error: "Unknown agent" }), { status: 404 });
+
+    await supabase.from("call_logs").insert({
+      client_id: client.id,
+      caller_number: callerNumber,
+      duration_seconds: durationSeconds,
+      transcript,
+      summary,
+    });
+
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+  } catch (e) {
+    console.error(e);
+    return new Response(JSON.stringify({ error: "Server error" }), { status: 500, headers: { "Content-Type": "application/json" } });
+  }
+});

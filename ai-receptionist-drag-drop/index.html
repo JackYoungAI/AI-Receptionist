@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Receptionist</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app" class="container">Loading…</div>
+
+  <script>
+    // If app never loads (e.g. app.js 404 on Cloudflare), show help after 5s.
+    setTimeout(function() {
+      var el = document.getElementById("app");
+      if (el && el.innerHTML.indexOf("Loading") !== -1 && el.querySelector(".card") === null) {
+        el.innerHTML = '<div class="card"><h2>App didn’t load</h2><p>Make sure you uploaded <b>all</b> files to Cloudflare: <b>index.html</b>, <b>config.js</b>, <b>app.js</b>, <b>style.css</b> in the same folder (root of the site).</p><p>Right‑click the page → <b>Inspect</b> → <b>Console</b> tab. If you see red errors for config.js or app.js (404), those files are missing from your upload.</p><p><button type="button" class="btn btn-primary" onclick="location.reload()">Reload</button></p></div>';
+      }
+    }, 5000);
+  </script>
+  <script src="config.js?v=2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="app.js?v=2"></script>
+</body>
+</html>
