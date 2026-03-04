@@ -290,7 +290,7 @@
         html += '<td><input type="time" name="close_' + d.k + '" value="' + escapeHtml(closeVal) + '" style="width:6rem;" /></td>';
         html += '<td><input type="checkbox" name="closed_' + d.k + '" ' + (closed ? "checked" : "") + ' /></td></tr>';
       });
-      html += "</tbody></table><p id="scheduleSaveMsg" class="hidden" style="margin-top:0.5rem;"></p>";
+      html += "</tbody></table><p id=\"scheduleSaveMsg\" class=\"hidden\" style=\"margin-top:0.5rem;\"></p>";
       html += '<button type="button" class="btn btn-primary" id="saveScheduleBtn">Save schedule</button></form></div>';
 
       html += '<div class="card"><h2 style="font-size:1rem;">Upcoming appointments</h2>';
