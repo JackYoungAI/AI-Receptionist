@@ -247,11 +247,15 @@
     Promise.all([
       sb.from("clients").select("*").eq("id", id).single(),
       sb.from("call_logs").select("*").eq("client_id", id).order("timestamp", { ascending: false }),
-      sb.from("appointments").select("*").eq("client_id", id).gte("start_time", new Date().toISOString()).order("start_time", { ascending: true })
+      sb.from("appointments").select("*").eq("client_id", id).gte("start_time", new Date().toISOString()).order("start_time", { ascending: true }),
+      sb.from("workers").select("*").eq("client_id", id).order("name", { ascending: true })
     ]).then(function (res) {
       var client = res[0].data;
       var logs = res[1].data || [];
       var appointments = res[2].data || [];
+      var workers = res[3].data || [];
+      var workerMap = {};
+      workers.forEach(function (w) { workerMap[w.id] = w; });
       if (!client) {
         appEl.innerHTML = "<p>Client not found.</p>";
         return;
@@ -259,14 +263,11 @@
       var minutes = logs.reduce(function (s, l) { return s + (l.duration_seconds || 0); }, 0) / 60;
 
       var html = '<nav class="nav"><a href="#dashboard" class="btn btn-secondary">← Dashboard</a><a href="#add" class="btn btn-primary">+ Add Client</a></nav>';
-      html += '<div class="card"><h1>' + escapeHtml(client.business_name) + '</h1>';
-      html += '<p style="color:#64748b;">' + escapeHtml(client.industry) + ' · Owner: ' + escapeHtml(client.owner_name) + '</p>';
-      html += '<p><strong>Status:</strong> ' + badge(client.status, trialExpired(client.trial_start_date)) + '</p>';
-      html += '<p><strong>Phone:</strong> ' + escapeHtml(client.phone_number) + ' &nbsp; <strong>AI phone:</strong> ' + escapeHtml(client.retell_phone_number || "—") + '</p>';
-      html += '<p><strong>Minutes this month:</strong> ' + minutes.toFixed(1) + ' &nbsp; <strong>Rate:</strong> ' + (client.monthly_rate ? "$" + client.monthly_rate : "—") + '</p>';
-      html += '<p><strong>Booking:</strong> ' + (client.booking_link ? '<a href="' + escapeHtml(client.booking_link) + '" target="_blank" rel="noopener">Link</a>' : "—") + '</p>';
-      html += '<p><strong>Hours:</strong> ' + escapeHtml(client.hours_of_operation || "—") + '</p>';
-      html += '<p><strong>Fallback:</strong> ' + escapeHtml(client.fallback_message || "—") + '</p>';
+      html += '<div class="card card-section"><h1>' + escapeHtml(client.business_name) + '</h1>';
+      html += '<p class="card-desc">' + escapeHtml(client.industry) + ' · Owner: ' + escapeHtml(client.owner_name) + '</p>';
+      html += '<p><strong>Status:</strong> ' + badge(client.status, trialExpired(client.trial_start_date)) + ' &nbsp; <strong>Phone:</strong> ' + escapeHtml(client.phone_number) + ' &nbsp; <strong>AI phone:</strong> ' + escapeHtml(client.retell_phone_number || "—") + '</p>';
+      html += '<p><strong>Minutes this month:</strong> ' + minutes.toFixed(1) + ' &nbsp; <strong>Rate:</strong> ' + (client.monthly_rate ? "$" + client.monthly_rate : "—") + ' &nbsp; <strong>Booking:</strong> ' + (client.booking_link ? '<a href="' + escapeHtml(client.booking_link) + '" target="_blank" rel="noopener">Link</a>' : "—") + '</p>';
+      html += '<p><strong>Hours:</strong> ' + escapeHtml(client.hours_of_operation || "—") + ' &nbsp; <strong>Fallback:</strong> ' + escapeHtml(client.fallback_message || "—") + '</p>';
       html += '<p id="clientError" class="error hidden"></p>';
       html += '<button type="button" class="btn btn-primary" id="saveClientBtn">Save changes</button> ';
       html += '<button type="button" class="btn btn-danger" id="deleteClientBtn">Delete client</button>';
@@ -275,11 +276,11 @@
       var s = client.business_schedule || {};
       var hours = s.hours || {};
       var dayLabels = [{ k: "mon", label: "Monday" }, { k: "tue", label: "Tuesday" }, { k: "wed", label: "Wednesday" }, { k: "thu", label: "Thursday" }, { k: "fri", label: "Friday" }, { k: "sat", label: "Saturday" }, { k: "sun", label: "Sunday" }];
-      html += '<div class="card"><h2 style="font-size:1rem;">Business schedule (for AI booking)</h2>';
+      html += '<div class="card card-section"><h2 class="card-title">Business schedule (for AI booking)</h2>';
       html += '<p style="color:#64748b; font-size:0.9rem;">Set when you’re open so the agent only offers times within these hours and doesn’t double-book.</p>';
       html += '<form id="scheduleForm"><label>Timezone</label><input name="schedule_timezone" value="' + escapeHtml(s.timezone || "America/New_York") + '" placeholder="America/New_York" />';
       html += '<label>Default appointment length (minutes)</label><input type="number" name="schedule_duration" min="5" value="' + (s.appointment_duration_minutes || 30) + '" />';
-      html += '<table style="margin-top:0.5rem;"><thead><tr><th>Day</th><th>Open</th><th>Close</th><th>Closed</th></tr></thead><tbody>';
+      html += '<table class="table" style="margin-top:0.5rem;"><thead><tr><th>Day</th><th>Open</th><th>Close</th><th>Closed</th></tr></thead><tbody>';
       dayLabels.forEach(function (d) {
         var h = hours[d.k];
         var closed = !h || !h.open || !h.close;
@@ -290,32 +291,53 @@
         html += '<td><input type="time" name="close_' + d.k + '" value="' + escapeHtml(closeVal) + '" style="width:6rem;" /></td>';
         html += '<td><input type="checkbox" name="closed_' + d.k + '" ' + (closed ? "checked" : "") + ' /></td></tr>';
       });
-      html += "</tbody></table><p id=\"scheduleSaveMsg\" class=\"hidden\" style=\"margin-top:0.5rem;\"></p>";
+      html += '</tbody></table><p id="scheduleSaveMsg" class="hidden" style="margin-top:0.5rem;"></p>';
       html += '<button type="button" class="btn btn-primary" id="saveScheduleBtn">Save schedule</button></form></div>';
 
-      html += '<div class="card"><h2 style="font-size:1rem;">Upcoming appointments</h2>';
-      if (appointments.length === 0) html += '<p style="color:#64748b;">No upcoming appointments. The AI will book new ones when callers request them.</p>';
+      html += '<div class="card card-section"><h2 class="card-title">Workers & specialties</h2>';
+      html += '<p class="card-desc">Add staff so you can assign who runs each appointment.</p>';
+      if (workers.length === 0) html += '<p class="muted">No workers yet. Add one below.</p>';
       else {
-        html += '<table><thead><tr><th>Date & time</th><th>Customer</th><th>Phone</th></tr></thead><tbody>';
+        html += '<table class="table"><thead><tr><th>Name</th><th>Specialty</th><th></th></tr></thead><tbody>';
+        workers.forEach(function (w) {
+          html += '<tr><td>' + escapeHtml(w.name) + '</td><td>' + escapeHtml(w.specialty || "—") + '</td><td><button type="button" class="btn btn-sm btn-ghost" data-worker-id="' + w.id + '">Remove</button></td></tr>';
+        });
+        html += '</tbody></table>';
+      }
+      html += '<form id="addWorkerForm" class="form-inline"><label>Name</label><input name="worker_name" placeholder="e.g. Jane" required />';
+      html += '<label>Specialty</label><input name="worker_specialty" placeholder="e.g. Haircuts, Color" />';
+      html += '<p id="workerMsg" class="hidden msg"></p><button type="submit" class="btn btn-primary">Add worker</button></form></div>';
+
+      html += '<div class="card card-section"><h2 class="card-title">Upcoming appointments</h2>';
+      if (appointments.length === 0) html += '<p class="muted">No upcoming appointments. The AI will book new ones when callers request them.</p>';
+      else {
+        html += '<table class="table"><thead><tr><th>Date & time</th><th>Customer</th><th>Phone</th><th>Worker</th></tr></thead><tbody>';
         appointments.forEach(function (a) {
           var start = new Date(a.start_time);
           var end = new Date(a.end_time);
           var dt = start.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
           var endStr = end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-          html += '<tr><td>' + escapeHtml(dt) + ' – ' + endStr + '</td><td>' + escapeHtml(a.customer_name || "—") + '</td><td>' + escapeHtml(a.customer_phone || "—") + '</td></tr>';
+          var w = a.worker_id ? workerMap[a.worker_id] : null;
+          var workerName = w ? (w.name + (w.specialty ? " (" + w.specialty + ")" : "")) : "—";
+          html += '<tr><td>' + escapeHtml(dt) + ' – ' + endStr + '</td><td>' + escapeHtml(a.customer_name || "—") + '</td><td>' + escapeHtml(a.customer_phone || "—") + '</td><td>' + escapeHtml(workerName) + '</td></tr>';
         });
         html += "</tbody></table>";
       }
-      html += '<form id="addApptForm" style="margin-top:1rem;"><h3 style="font-size:0.95rem;">Add appointment manually</h3>';
+      html += '<form id="addApptForm" class="form-grid"><h3 class="form-subtitle">Add appointment manually</h3>';
       html += '<label>Date</label><input type="date" name="appt_date" required />';
       html += '<label>Start time</label><input type="time" name="appt_time" required />';
       html += '<label>Duration (minutes)</label><input type="number" name="appt_duration" value="30" min="5" />';
+      html += '<label>Assign to worker</label><select name="appt_worker_id"><option value="">— No one —</option>';
+      workers.forEach(function (w) {
+        html += '<option value="' + w.id + '">' + escapeHtml(w.name) + (w.specialty ? ' — ' + escapeHtml(w.specialty) : '') + '</option>';
+      });
+      html += '</select>';
       html += '<label>Customer name</label><input name="appt_name" />';
       html += '<label>Customer phone</label><input name="appt_phone" />';
       html += '<p id="addApptError" class="error hidden"></p>';
       html += '<button type="submit" class="btn btn-secondary">Add appointment</button></form></div>';
 
-      html += '<div class="card"><h2 style="font-size:1rem;">Edit</h2><form id="editForm">';
+      html += '<div class="card card-section"><h2 class="card-title">Edit</h2><form id="editForm">';
       html += '<label>Business name</label><input name="business_name" value="' + escapeHtml(client.business_name) + '" />';
       html += '<label>Owner</label><input name="owner_name" value="' + escapeHtml(client.owner_name) + '" />';
       html += '<label>Industry</label><input name="industry" value="' + escapeHtml(client.industry) + '" />';
@@ -328,7 +350,7 @@
       });
       html += '</select></form></div>';
 
-      html += '<div class="card"><h2 style="font-size:1rem;">Call logs</h2><table><thead><tr><th>Date</th><th>Caller</th><th>Duration</th><th>Summary</th></tr></thead><tbody>';
+      html += '<div class="card card-section"><h2 class="card-title">Call logs</h2><table class="table"><thead><tr><th>Date</th><th>Caller</th><th>Duration</th><th>Summary</th></tr></thead><tbody>';
       if (logs.length === 0) html += '<tr><td colspan="4" style="text-align:center; color:#64748b;">No calls yet.</td></tr>';
       else logs.forEach(function (l) {
         var d = l.timestamp ? new Date(l.timestamp).toLocaleString() : "—";
@@ -363,6 +385,34 @@
         });
       };
 
+      document.getElementById("addWorkerForm").onsubmit = function (e) {
+        e.preventDefault();
+        var form = document.getElementById("addWorkerForm");
+        var msgEl = document.getElementById("workerMsg");
+        sb.from("workers").insert({ client_id: id, name: form.worker_name.value.trim(), specialty: form.worker_specialty.value.trim() || null }).then(function () {
+          msgEl.textContent = "Worker added.";
+          msgEl.classList.remove("hidden");
+          msgEl.style.color = "var(--success)";
+          form.worker_name.value = "";
+          form.worker_specialty.value = "";
+          setHash("client-" + id);
+          run();
+        }).catch(function (err) {
+          msgEl.textContent = err.message || "Failed to add worker";
+          msgEl.classList.remove("hidden");
+          msgEl.style.color = "";
+        });
+      };
+      appEl.querySelectorAll("[data-worker-id]").forEach(function (btn) {
+        btn.onclick = function () {
+          if (!confirm("Remove this worker?")) return;
+          sb.from("workers").delete().eq("id", btn.getAttribute("data-worker-id")).then(function () {
+            setHash("client-" + id);
+            run();
+          });
+        };
+      });
+
       document.getElementById("addApptForm").onsubmit = function (e) {
         e.preventDefault();
         var form = document.getElementById("addApptForm");
@@ -372,10 +422,12 @@
         var dateStr = form.appt_date.value;
         var timeStr = form.appt_time.value;
         var dur = parseInt(form.appt_duration.value, 10) || 30;
+        var workerId = form.appt_worker_id.value || null;
         var start = new Date(dateStr + "T" + timeStr);
         var end = new Date(start.getTime() + dur * 60 * 1000);
         sb.from("appointments").insert({
           client_id: id,
+          worker_id: workerId,
           start_time: start.toISOString(),
           end_time: end.toISOString(),
           customer_name: form.appt_name.value || null,

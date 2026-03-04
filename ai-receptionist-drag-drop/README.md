@@ -97,8 +97,14 @@ The function checks business hours and existing appointments and only creates th
 ## Summary
 
 - **config.js** = your Supabase URL + anon key  
-- **Supabase** = run `sql/schema.sql`, create one user. If you already had the app, run `sql/migration-schedule-appointments.sql` for schedule/booking.  
+- **Supabase** = run `sql/schema.sql`, create one user. If you already had the app, run `sql/migration-schedule-appointments.sql` then `sql/migration-workers.sql` for schedule, appointments, and workers.  
 - **drop.netlify.com** = drag this folder → get a link  
 - **Retell** = create agents in their dashboard, paste agent ID and phone number into each client. Set the **Inbound Webhook** to `retell-inbound` so the agent gets schedule + appointments; add the **Custom function** `retell-book-appointment` so it can book appointments that don’t conflict.
 
 No Node, no npm, no GitHub, no install.
+
+---
+
+## Set up Twilio + Retell (phone + AI agent)
+
+See **[SETUP-TWILIO-RETELL.md](SETUP-TWILIO-RETELL.md)** for step-by-step instructions to connect a Twilio number and Retell AI to your dashboard.

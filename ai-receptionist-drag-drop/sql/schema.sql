@@ -21,9 +21,18 @@ create table if not exists public.clients (
   created_at      timestamptz default now()
 );
 
+create table if not exists public.workers (
+  id              uuid primary key default gen_random_uuid(),
+  client_id       uuid not null references public.clients(id) on delete cascade,
+  name            text not null,
+  specialty       text,
+  created_at      timestamptz default now()
+);
+
 create table if not exists public.appointments (
   id              uuid primary key default gen_random_uuid(),
   client_id       uuid not null references public.clients(id) on delete cascade,
+  worker_id       uuid references public.workers(id) on delete set null,
   start_time      timestamptz not null,
   end_time        timestamptz not null,
   customer_name   text,
@@ -33,6 +42,10 @@ create table if not exists public.appointments (
 );
 
 create index if not exists appointments_client_start_idx on public.appointments (client_id, start_time);
+create index if not exists workers_client_idx on public.workers (client_id);
+alter table public.workers enable row level security;
+create policy "Admin full access on workers" on public.workers for all
+  using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
 create table if not exists public.call_logs (
   id               uuid primary key default gen_random_uuid(),
