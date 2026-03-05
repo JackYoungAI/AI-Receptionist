@@ -2,6 +2,7 @@
   var supabase = null;
   var session = null;
   var rendered = false;
+  var userRole = null; // { isAdmin, clientIdForUser } after login
 
   // If still "Loading..." after 8s, show help (e.g. Supabase not responding or script error).
   setTimeout(function () {
@@ -31,6 +32,26 @@
     var h = getHash();
     if (h.startsWith("client-")) return h.replace("client-", "");
     return null;
+  }
+
+  function getViewAsClientId() {
+    var h = getHash();
+    if (h.startsWith("client-view-")) return h.replace("client-view-", "");
+    return null;
+  }
+
+  function loadUserRole() {
+    var sb = getSupabase();
+    if (!sb || !session || !session.user || !session.user.email) return Promise.resolve({ isAdmin: false, clientIdForUser: null });
+    var email = session.user.email.toLowerCase();
+    return Promise.all([
+      sb.from("admins").select("email").eq("email", email).maybeSingle(),
+      sb.from("client_users").select("client_id").eq("email", email).maybeSingle()
+    ]).then(function (res) {
+      var isAdmin = !!(res[0].data && res[0].data.email);
+      var clientIdForUser = res[1].data && res[1].data.client_id ? res[1].data.client_id : null;
+      return { isAdmin: isAdmin, clientIdForUser: clientIdForUser };
+    });
   }
 
   function setHash(h) {
@@ -149,6 +170,105 @@
     }
   }
 
+  function renderNoAccess() {
+    var html = '<div class="card" style="max-width: 420px; margin: 2rem auto;">';
+    html += '<h1>No access</h1><p class="card-desc">Your account is not set up as an admin or a client. Contact the administrator to get access.</p>';
+    html += '<button type="button" class="btn btn-primary" id="logoutBtn">Log out</button></div>';
+    document.getElementById("app").innerHTML = html;
+    document.getElementById("logoutBtn").onclick = function () {
+      getSupabase().auth.signOut();
+      session = null;
+      userRole = null;
+      setHash("login");
+      run();
+    };
+  }
+
+  function renderClientPanel(clientId, isViewAsClient) {
+    var sb = getSupabase();
+    var appEl = document.getElementById("app");
+    appEl.innerHTML = "<p>Loading...</p>";
+
+    Promise.all([
+      sb.from("clients").select("*").eq("id", clientId).single(),
+      sb.from("call_logs").select("*").eq("client_id", clientId).order("timestamp", { ascending: false }).limit(50),
+      sb.from("appointments").select("*").eq("client_id", clientId).gte("start_time", new Date().toISOString()).order("start_time", { ascending: true }),
+      sb.from("workers").select("id,name,specialty").eq("client_id", clientId).order("name", { ascending: true })
+    ]).then(function (res) {
+      var client = res[0].data;
+      var logs = res[1].data || [];
+      var appointments = res[2].data || [];
+      var workers = res[3].data || [];
+      var workerMap = {};
+      workers.forEach(function (w) { workerMap[w.id] = w; });
+      if (!client) {
+        appEl.innerHTML = "<p>Company not found.</p>";
+        return;
+      }
+      var minutes = logs.reduce(function (s, l) { return s + (l.duration_seconds || 0); }, 0) / 60;
+      var thisMonthStart = new Date();
+      thisMonthStart.setDate(1);
+      thisMonthStart.setHours(0, 0, 0, 0);
+      var minsThisMonth = logs.filter(function (l) { return new Date(l.timestamp) >= thisMonthStart; }).reduce(function (s, l) { return s + (l.duration_seconds || 0); }, 0) / 60;
+
+      var html = '<nav class="nav">';
+      if (isViewAsClient) html += '<a href="#dashboard" class="btn btn-secondary" id="backToAdminBtn">← Back to admin</a>';
+      html += '<span class="nav-title">Client portal</span><button type="button" class="btn btn-ghost" id="logoutBtn">Log out</button></nav>';
+      html += '<div class="card card-section"><h1>' + escapeHtml(client.business_name) + '</h1>';
+      html += '<p class="card-desc">' + escapeHtml(client.industry) + ' · Owner: ' + escapeHtml(client.owner_name) + '</p>';
+      html += '<p><strong>Status:</strong> ' + badge(client.status, trialExpired(client.trial_start_date)) + ' &nbsp; <strong>Phone:</strong> ' + escapeHtml(client.phone_number) + ' &nbsp; <strong>AI phone:</strong> ' + escapeHtml(client.retell_phone_number || "—") + '</p>';
+      html += '<p><strong>Minutes this month:</strong> ' + minsThisMonth.toFixed(1) + ' &nbsp; <strong>Rate:</strong> ' + (client.monthly_rate ? "$" + client.monthly_rate : "—") + ' &nbsp; <strong>Booking:</strong> ' + (client.booking_link ? '<a href="' + escapeHtml(client.booking_link) + '" target="_blank" rel="noopener">Link</a>' : "—") + '</p>';
+      html += '<p><strong>Hours:</strong> ' + escapeHtml(client.hours_of_operation || "—") + '</p></div>';
+
+      html += '<div class="card card-section"><h2 class="card-title">Upcoming appointments</h2>';
+      if (appointments.length === 0) html += '<p class="muted">No upcoming appointments.</p>';
+      else {
+        html += '<table class="table"><thead><tr><th>Date & time</th><th>Customer</th><th>Phone</th><th>Worker</th></tr></thead><tbody>';
+        appointments.forEach(function (a) {
+          var start = new Date(a.start_time);
+          var end = new Date(a.end_time);
+          var dt = start.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+          var endStr = end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+          var w = a.worker_id ? workerMap[a.worker_id] : null;
+          var workerName = w ? (w.name + (w.specialty ? " (" + w.specialty + ")" : "")) : "—";
+          html += '<tr><td>' + escapeHtml(dt) + ' – ' + endStr + '</td><td>' + escapeHtml(a.customer_name || "—") + '</td><td>' + escapeHtml(a.customer_phone || "—") + '</td><td>' + escapeHtml(workerName) + '</td></tr>';
+        });
+        html += "</tbody></table>";
+      }
+      html += "</div>";
+
+      html += '<div class="card card-section"><h2 class="card-title">Recent call logs</h2>';
+      if (logs.length === 0) html += '<p class="muted">No calls yet.</p>';
+      else {
+        html += '<table class="table"><thead><tr><th>Date</th><th>Caller</th><th>Duration</th><th>Summary</th></tr></thead><tbody>';
+        logs.slice(0, 20).forEach(function (l) {
+          var d = l.timestamp ? new Date(l.timestamp).toLocaleString() : "—";
+          var dur = l.duration_seconds ? Math.floor(l.duration_seconds / 60) + "m " + (l.duration_seconds % 60) + "s" : "—";
+          html += "<tr><td>" + d + "</td><td>" + escapeHtml(l.caller_number || "—") + "</td><td>" + dur + "</td><td>" + escapeHtml((l.summary || "").slice(0, 80)) + "</td></tr>";
+        });
+        html += "</tbody></table>";
+      }
+      html += "</div>";
+
+      appEl.innerHTML = html;
+      document.getElementById("logoutBtn").onclick = function () {
+        sb.auth.signOut();
+        session = null;
+        userRole = null;
+        setHash("login");
+        run();
+      };
+      if (isViewAsClient && document.getElementById("backToAdminBtn")) {
+        document.getElementById("backToAdminBtn").onclick = function () {
+          setHash("dashboard");
+          run();
+        };
+      }
+    }).catch(function (err) {
+      appEl.innerHTML = '<div class="card"><p class="error">' + escapeHtml(err.message) + "</p></div>";
+    });
+  }
+
   function renderDashboard() {
     var sb = getSupabase();
     var appEl = document.getElementById("app");
@@ -164,6 +284,11 @@
       minsData.forEach(function (r) { mins[r.client_id] = r.minutes || 0; });
 
       var html = '<nav class="nav"><a href="#dashboard" class="btn btn-primary">Dashboard</a><a href="#add" class="btn btn-secondary">+ Add Client</a>';
+      html += '<div class="nav-view-as"><label class="nav-view-as-label">View as client</label><select id="viewAsClientSelect" class="view-as-select"><option value="">— Switch to client view —</option>';
+      clients.forEach(function (c) {
+        html += '<option value="' + c.id + '">' + escapeHtml(c.business_name) + '</option>';
+      });
+      html += '</select></div>';
       html += '<button type="button" class="btn btn-secondary" id="logoutBtn">Log out</button></nav>';
       html += '<h1>Clients</h1>';
       html += '<div class="card"><table><thead><tr><th>Business</th><th>Industry</th><th>Status</th><th>AI Phone</th><th>Minutes</th><th>Rate</th></tr></thead><tbody>';
@@ -181,9 +306,17 @@
       }
       html += "</tbody></table></div>";
       appEl.innerHTML = html;
+      document.getElementById("viewAsClientSelect").onchange = function () {
+        var id = this.value;
+        if (id) {
+          setHash("client-view-" + id);
+          run();
+        }
+      };
       document.getElementById("logoutBtn").onclick = function () {
         sb.auth.signOut();
         session = null;
+        userRole = null;
         setHash("login");
         run();
       };
@@ -248,12 +381,14 @@
       sb.from("clients").select("*").eq("id", id).single(),
       sb.from("call_logs").select("*").eq("client_id", id).order("timestamp", { ascending: false }),
       sb.from("appointments").select("*").eq("client_id", id).gte("start_time", new Date().toISOString()).order("start_time", { ascending: true }),
-      sb.from("workers").select("*").eq("client_id", id).order("name", { ascending: true })
+      sb.from("workers").select("*").eq("client_id", id).order("name", { ascending: true }),
+      sb.from("client_users").select("id,email").eq("client_id", id)
     ]).then(function (res) {
       var client = res[0].data;
       var logs = res[1].data || [];
       var appointments = res[2].data || [];
       var workers = res[3].data || [];
+      var portalUsers = res[4].data || [];
       var workerMap = {};
       workers.forEach(function (w) { workerMap[w.id] = w; });
       if (!client) {
@@ -262,7 +397,8 @@
       }
       var minutes = logs.reduce(function (s, l) { return s + (l.duration_seconds || 0); }, 0) / 60;
 
-      var html = '<nav class="nav"><a href="#dashboard" class="btn btn-secondary">← Dashboard</a><a href="#add" class="btn btn-primary">+ Add Client</a></nav>';
+      var html = '<nav class="nav"><a href="#dashboard" class="btn btn-secondary">← Dashboard</a><a href="#add" class="btn btn-primary">+ Add Client</a>';
+      html += '<a href="#client-view-' + id + '" class="btn btn-secondary">View as client</a></nav>';
       html += '<div class="card card-section"><h1>' + escapeHtml(client.business_name) + '</h1>';
       html += '<p class="card-desc">' + escapeHtml(client.industry) + ' · Owner: ' + escapeHtml(client.owner_name) + '</p>';
       html += '<p><strong>Status:</strong> ' + badge(client.status, trialExpired(client.trial_start_date)) + ' &nbsp; <strong>Phone:</strong> ' + escapeHtml(client.phone_number) + ' &nbsp; <strong>AI phone:</strong> ' + escapeHtml(client.retell_phone_number || "—") + '</p>';
@@ -350,6 +486,19 @@
       });
       html += '</select></form></div>';
 
+      html += '<div class="card card-section"><h2 class="card-title">Client portal access</h2>';
+      html += '<p class="card-desc">Emails listed here can log in and see this company\'s read-only client panel (minutes, appointments, call logs).</p>';
+      if (portalUsers.length === 0) html += '<p class="muted">No portal users yet. Add an email below.</p>';
+      else {
+        html += '<table class="table"><thead><tr><th>Email</th><th></th></tr></thead><tbody>';
+        portalUsers.forEach(function (u) {
+          html += '<tr><td>' + escapeHtml(u.email) + '</td><td><button type="button" class="btn btn-sm btn-ghost" data-portal-id="' + u.id + '">Remove</button></td></tr>';
+        });
+        html += '</tbody></table>';
+      }
+      html += '<form id="addPortalUserForm" class="form-inline"><label>Email</label><input type="email" name="portal_email" placeholder="client@example.com" required />';
+      html += '<p id="portalMsg" class="hidden msg"></p><button type="submit" class="btn btn-primary">Add portal access</button></form></div>';
+
       html += '<div class="card card-section"><h2 class="card-title">Call logs</h2><table class="table"><thead><tr><th>Date</th><th>Caller</th><th>Duration</th><th>Summary</th></tr></thead><tbody>';
       if (logs.length === 0) html += '<tr><td colspan="4" style="text-align:center; color:#64748b;">No calls yet.</td></tr>';
       else logs.forEach(function (l) {
@@ -360,6 +509,34 @@
       html += "</tbody></table></div>";
 
       appEl.innerHTML = html;
+
+      document.getElementById("addPortalUserForm").onsubmit = function (e) {
+        e.preventDefault();
+        var form = document.getElementById("addPortalUserForm");
+        var msgEl = document.getElementById("portalMsg");
+        var email = form.portal_email.value.trim().toLowerCase();
+        sb.from("client_users").insert({ client_id: id, email: email }).then(function () {
+          msgEl.textContent = "Access added. They can log in with this email.";
+          msgEl.classList.remove("hidden");
+          msgEl.style.color = "var(--success)";
+          form.portal_email.value = "";
+          setHash("client-" + id);
+          run();
+        }).catch(function (err) {
+          msgEl.textContent = err.message || "Failed (email may already have access elsewhere).";
+          msgEl.classList.remove("hidden");
+          msgEl.style.color = "";
+        });
+      };
+      appEl.querySelectorAll("[data-portal-id]").forEach(function (btn) {
+        btn.onclick = function () {
+          if (!confirm("Remove portal access for this email?")) return;
+          sb.from("client_users").delete().eq("id", btn.getAttribute("data-portal-id")).then(function () {
+            setHash("client-" + id);
+            run();
+          });
+        };
+      });
 
       document.getElementById("saveScheduleBtn").onclick = function () {
         var form = document.getElementById("scheduleForm");
@@ -489,11 +666,10 @@
     if (!sb) return;
     sb.auth.getSession()
       .then(function (res) {
-        rendered = true;
         session = res.data.session;
-        var hash = getHash();
-        var clientId = getHashId();
         if (!session) {
+          rendered = true;
+          var hash = getHash();
           if (hash === "signup") {
             renderSignup();
           } else {
@@ -502,15 +678,35 @@
           }
           return;
         }
-        if (hash === "login" || hash === "") {
-          setHash("dashboard");
-          run();
-          return;
-        }
-        if (hash === "dashboard") renderDashboard();
-        else if (hash === "add") renderAdd();
-        else if (clientId) renderClient(clientId);
-        else renderDashboard();
+        return loadUserRole().then(function (role) {
+          userRole = role;
+          rendered = true;
+          var hash = getHash();
+          var clientId = getHashId();
+          var viewAsId = getViewAsClientId();
+
+          if (viewAsId && role.isAdmin) {
+            renderClientPanel(viewAsId, true);
+            return;
+          }
+          if (role.clientIdForUser && !role.isAdmin) {
+            renderClientPanel(role.clientIdForUser, false);
+            return;
+          }
+          if (!role.isAdmin && !role.clientIdForUser) {
+            renderNoAccess();
+            return;
+          }
+          if (hash === "login" || hash === "") {
+            setHash("dashboard");
+            run();
+            return;
+          }
+          if (hash === "dashboard") renderDashboard();
+          else if (hash === "add") renderAdd();
+          else if (clientId) renderClient(clientId);
+          else renderDashboard();
+        });
       })
       .catch(function (err) {
         rendered = true;

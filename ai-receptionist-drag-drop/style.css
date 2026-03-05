@@ -74,6 +74,32 @@ a:hover {
   align-items: center;
 }
 
+.nav-title {
+  margin-right: auto;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.nav-view-as {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nav-view-as-label {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: none;
+  font-weight: 500;
+}
+
+.view-as-select {
+  width: auto;
+  min-width: 180px;
+  margin-bottom: 0;
+}
+
 /* Buttons */
 .btn {
   display: inline-block;
